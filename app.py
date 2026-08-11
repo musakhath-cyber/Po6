@@ -1,4 +1,195 @@
-import re
+imimport re
+import io
+import json
+import tempfile
+from pathlib import Path
+
+import pandas as pd
+import numpy as np
+import streamlit as st
+import matplotlib.pyplot as plt
+from scipy.optimize import milp, LinearConstraint, Bounds
+import pdfplumber
+
+# Page Configuration
+st.set_page_config(
+    page_title="Procurement Basket Optimizer",
+    page_icon="🧾",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ======================================================================
+# 1. CATALOG & BUYING MANUAL INGESTION MODULE
+# ======================================================================
+
+PERISHABLE_CATEGORIES = {
+    "fresh veg", "fresh produce", "produce", "meat", "poultry", "dairy",
+    "butchery", "seafood", "fish", "bakery", "fruit", "fresh fruit", "veg",
+    "vegetables", "fresh"
+}
+NON_PERISHABLE_CATEGORIES = {
+    "dry goods", "chemicals", "cleaning", "packaging", "beverages", "grocery",
+    "canned", "canned goods", "spices", "oils", "frozen", "dry", "non-perishable"
+}
+
+
+def _parse_price_val(raw_val):
+    if pd.isna(raw_val):
+        return None
+    val_str = str(raw_val).strip()
+    if not val_str or val_str.lower() in ("nan", "none", "null", "0", "0.0", "-"):
+        return None
+    cleaned = re.sub(r"[^\d.,\-]", "", val_str)
+    if not cleaned:
+        return None
+    if "," in cleaned and "." in cleaned:
+        if cleaned.rfind(".") > cleaned.rfind(","):
+            cleaned = cleaned.replace(",", "")
+        else:
+            cleaned = cleaned.replace(".", "").replace(",", ".")
+    elif "," in cleaned:
+        parts = cleaned.split(",")
+        if len(parts) == 2 and len(parts) <= 2:
+            cleaned = cleaned.replace(",", ".")
+        else:
+            cleaned = cleaned.replace(",", "")
+    try:
+        val = float(cleaned)
+        return val if val > 0 else None
+    except ValueError:
+        return None
+
+
+def _infer_perishable(category):
+    if not category or not isinstance(category, str):
+        return True
+    cat_lower = category.strip().lower()
+    if any(kw in cat_lower for kw in ["dry", "packaging", "chemical", "cleaning", "beverage", "canned", "frozen", "non-perishable"]):
+        return False
+    return True
+
+
+def parse_buying_manual_bytes(file_bytes, filename="uploaded_file.csv", default_supplier_name="Uploaded Supplier"):
+    """
+    Universal buying manual parser supporting single-supplier sheets, multi-supplier matrix tables,
+    Excel workbooks, CSV files, and PDF documents.
+    """
+    fname_lower = filename.lower()
+    is_excel = fname_lower.endswith((".xlsx", ".xls"))
+    is_pdf = fname_lower.endswith(".pdf")
+
+    all_dfs = []
+
+    if is_pdf:
+        try:
+            with pdfplumber.open(io.BytesIO(file_bytes)) as pdf:
+                pdf_rows = []
+                for page in pdf.pages:
+                    tables = page.extract_tables()
+                    if tables:
+                        for tbl in tables:
+                            for r in tbl:
+                                if r and any(r):
+                                    pdf_rows.append([str(c).strip() if c is not None else "" for c in r])
+                    else:
+                        text = page.extract_text()
+                        if text:
+                            for line in text.split("\n"):
+                                parts = line.split()
+                                if parts:
+                                    pdf_rows.append(parts)
+                if pdf_rows:
+                    max_cols = max(len(r) for r in pdf_rows)
+                    max_cols = max(max_cols, 60)
+                    padded_rows = [r + [""] * (max_cols - len(r)) for r in pdf_rows]
+                    all_dfs.append(pd.DataFrame(padded_rows))
+        except Exception:
+            pass
+    elif is_excel:
+        try:
+            xl = pd.ExcelFile(io.BytesIO(file_bytes), engine='openpyxl')
+            for sheet in xl.sheet_names:
+                try:
+                    raw_df = xl.parse(sheet, header=None, names=list(range(60)))
+                    all_dfs.append(raw_df)
+                except Exception:
+                    pass
+        except Exception:
+            try:
+                raw_df = pd.read_csv(io.BytesIO(file_bytes), header=None, names=list(range(60)), on_bad_lines='skip')
+                all_dfs.append(raw_df)
+            except Exception:
+                pass
+    else:
+        parsed = False
+        for sep in [",", ";", "\t", "|"]:
+            try:
+                raw_df = pd.read_csv(io.BytesIO(file_bytes), header=None, sep=sep, names=list(range(60)), on_bad_lines='skip')
+                if raw_df.shape > 1:
+                    all_dfs.append(raw_df)
+                    parsed = True
+                    break
+            except Exception:
+                continue
+        if not parsed:
+            try:
+                text_str = file_bytes.decode('utf-8', errors='ignore') if isinstance(file_bytes, bytes) else file_bytes
+                raw_df = pd.read_csv(io.StringIO(text_str), header=None, names=list(range(60)), on_bad_lines='skip')
+                all_dfs.append(raw_df)
+            except Exception:
+                pass
+
+    suppliers = {}
+
+    header_kws = [
+        "stock item", "item description", "product description", "product name",
+        "deal price", "best price", "price excl", "customer products", "item",
+        "product", "description", "particulars", "article", "details"
+    ]
+
+    for df in all_dfs:
+        rows = df.values.tolist()
+        i = 0
+        n_rows = len(rows)
+
+        while i < n_rows:
+            row_vals = [str(val).strip() if not pd.isna(val) else "" for val in rows[i]]
+            row_str_lower = " ".join(row_vals).lower()
+
+            if any(kw in row_str_lower for kw in header_kws):
+                current_cols = row_vals
+
+                item_col_idx = None
+                cat_col_idx = None
+                uom_col_idx = None
+
+                for c_idx, c_name in enumerate(current_cols):
+                    cn = c_name.lower().strip()
+                    if cn in ["stock item", "item description", "product description", "product name", "stock_item", "description", "customer products", "item", "product", "article"]:
+                        item_col_idx = c_idx
+                        break
+                if item_col_idx is None:
+                    for c_idx, c_name in enumerate(current_cols):
+                        cn = c_name.lower().strip()
+                        if ("item" in cn or "product" in cn or "description" in cn or "particular" in cn) and ("group" not in cn and "code" not in cn and "category" not in cn):
+                            item_col_idx = c_idx
+                            break
+                if item_col_idx is None:
+                    item_col_idx = 0
+
+                for c_idx, c_name in enumerate(current_cols):
+                    cn = c_name.lower().strip()
+                    if "category" in cn or "dept" in cn or "group" in cn:
+                        cat_col_idx = c_idx
+                        break
+
+                for c_idx, c_name in enumerate(current_cols):
+                    cn = c_name.lower().strip()
+                    if "uom" in cn or "unit" in cn or "pack" in cn or "measure" in cn or "size" in cn:
+                        uom_col_idx = c_idx
+                        
+port re
 import io
 import json
 import tempfile
