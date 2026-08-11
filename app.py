@@ -744,6 +744,7 @@ if st.session_state.suppliers:
                 items_df = pd.DataFrame(
                     [
                         {
+                            "In Demand": "✅" if item in st.session_state.demand else "",
                             "Item": item,
                             "Price (R)": meta["price"],
                             "Category": meta.get("category", ""),
@@ -751,15 +752,30 @@ if st.session_state.suppliers:
                         }
                         for item, meta in data["catalog"].items()
                     ]
-                ).sort_values("Item")
-                st.dataframe(
+                ).sort_values("Item").reset_index(drop=True)
+
+                st.caption("Click an item to add it to Required Item Demand")
+                event = st.dataframe(
                     items_df,
                     hide_index=True,
                     width='stretch',
                     column_config={
                         "Price (R)": st.column_config.NumberColumn(format="R%.2f"),
                     },
+                    on_select="rerun",
+                    selection_mode="single-row",
+                    key=f"supplier_items_{name}",
                 )
+
+                selected_rows = event.selection.rows if event and event.selection else []
+                if selected_rows:
+                    clicked_item = items_df.iloc[selected_rows[0]]["Item"]
+                    last_clicked_key = f"_last_clicked_{name}"
+                    if st.session_state.get(last_clicked_key) != clicked_item:
+                        st.session_state.demand.setdefault(clicked_item, 1.0)
+                        st.session_state[last_clicked_key] = clicked_item
+                        st.toast(f"Added '{clicked_item}' to Required Item Demand")
+                        st.rerun()
             else:
                 st.caption("No items in this catalog yet.")
 
@@ -808,7 +824,7 @@ with tab1:
             key="demand_editor",
         )
 
-        if st.button("💾 Save Demand Matrix", type="primary", key="save_demand_btn"):
+        if st.button("💾 Save Order", type="primary", key="save_demand_btn"):
             st.session_state.demand = {
                 row["Item"]: float(row["Required quantity"])
                 for _, row in edited.iterrows()
