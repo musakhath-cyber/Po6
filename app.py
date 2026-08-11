@@ -18,8 +18,8 @@ except ImportError:
 
 # Page Configuration
 st.set_page_config(
-    page_title="Procurement Basket Optimizer",
-    page_icon="🧾",
+    page_title="Cherry Picker 🍒",
+    page_icon="🍒",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -585,7 +585,7 @@ def report(result, pairs, pair_index, supplier_names, y_offset, z_offset,
 
 st.markdown("""
 <div style="background-color: #1E293B; padding: 20px; border-radius: 10px; margin-bottom: 25px; color: white; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);">
-    <h1 style="color: #38BDF8; margin: 0; padding-bottom: 5px;">📊 Procurement Basket Optimizer</h1>
+    <h1 style="color: #38BDF8; margin: 0; padding-bottom: 5px;">🍒 Cherry Picker</h1>
     <p style="color: #94A3B8; margin: 0; font-size: 1.05rem;">Multi-supplier catalog ingestion, demand planning, and MILP basket cost minimization dashboard</p>
 </div>
 """, unsafe_allow_html=True)
@@ -739,11 +739,37 @@ st.sidebar.subheader("Active Suppliers")
 
 if st.session_state.suppliers:
     for name, data in list(st.session_state.suppliers.items()):
-        c1, c2 = st.sidebar.columns(2)
-        c1.write(f"**{name}** — {len(data['catalog'])} items")
-        if c2.button("✕", key=f"remove_{name}"):
-            del st.session_state.suppliers[name]
-            st.rerun()
+        with st.sidebar.expander(f"🏢 {name} — {len(data['catalog'])} items"):
+            if data["catalog"]:
+                items_df = pd.DataFrame(
+                    [
+                        {
+                            "Item": item,
+                            "Price (R)": meta["price"],
+                            "Category": meta.get("category", ""),
+                            "Perishable": "Yes" if meta.get("perishable", True) else "No",
+                        }
+                        for item, meta in data["catalog"].items()
+                    ]
+                ).sort_values("Item")
+                st.dataframe(
+                    items_df,
+                    hide_index=True,
+                    width='stretch',
+                    column_config={
+                        "Price (R)": st.column_config.NumberColumn(format="R%.2f"),
+                    },
+                )
+            else:
+                st.caption("No items in this catalog yet.")
+
+            m1, m2 = st.columns(2)
+            m1.caption(f"Free delivery: R{data['free_delivery_threshold']:,.0f}")
+            m2.caption(f"Delivery fee: R{data['delivery_fee']:,.0f}")
+
+            if st.button("✕ Remove supplier", key=f"remove_{name}", width='stretch'):
+                del st.session_state.suppliers[name]
+                st.rerun()
 else:
     st.sidebar.info("No suppliers added yet.")
 
@@ -979,10 +1005,10 @@ with tab3:
             st.download_button(
                 "⬇️ Download Purchase Basket CSV",
                 csv,
-                "optimized_purchase_basket.csv",
+                "cherry_picker_basket.csv",
                 "text/csv",
                 key="download_basket_csv_btn",
             )
 
 st.divider()
-st.caption("Procurement Optimizer Web Dashboard | SciPy MILP Engine & Streamlit")
+st.caption("🍒 Cherry Picker | SciPy MILP Engine & Streamlit")
