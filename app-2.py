@@ -824,7 +824,7 @@ with tab1:
             key="demand_editor",
         )
 
-        if st.button("💾 Save Order", type="primary", key="save_demand_btn"):
+        if st.button("💾 Save Demand Matrix", type="primary", key="save_demand_btn"):
             st.session_state.demand = {
                 row["Item"]: float(row["Required quantity"])
                 for _, row in edited.iterrows()
