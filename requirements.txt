@@ -1,7 +1,5 @@
-streamlit>=1.36.0
-pandas>=2.0.0
-numpy>=1.24.0
-scipy>=1.10.0
-matplotlib>=3.7.0
-openpyxl>=3.1.0
-pdfplumber>=0.11.0
+streamlit
+google-genai
+pillow
+pydantic
+pandas
